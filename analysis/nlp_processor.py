@@ -22,18 +22,53 @@ def segment_words(text, stopwords_set):
 
 
 def compute_sentiment(text, star_rating=None):
-    if len(text) < 5:
-        return "中性"
+    """
+    计算评论的情感倾向
+    
+    优先级：
+    1. 星级评分（1-2星=负面，5星=正面，3-4星=中性或结合文本）
+    2. 文本情感分析
+    
+    Args:
+        text: 评论文本
+        star_rating: 星级评分（1-5）
+    
+    Returns:
+        str: 情感标签（"正面"、"中性"、"负面"）
+    """
+    # 优先使用星级判断（星级是用户明确表达的情感倾向）
     if star_rating is not None and not pd.isna(star_rating):
         star_rating = int(star_rating)
+        # 1-2星明确为负面
         if star_rating in (1, 2):
             return "负面"
+        # 5星明确为正面
         if star_rating == 5:
             return "正面"
+        # 3-4星为中性，但可结合文本分析进行细化
+        if star_rating in (3, 4):
+            # 如果文本足够长，使用SnowNLP辅助判断
+            if len(text) >= 5:
+                try:
+                    score = SnowNLP(text).sentiments
+                    if score > SENTIMENT_THRESHOLD_POS:
+                        return "正面"
+                    if score < SENTIMENT_THRESHOLD_NEG:
+                        return "负面"
+                except Exception:
+                    pass
+            return "中性"
+    
+    # 无星级时，过短评论返回中性
+    if len(text) < 5:
+        return "中性"
+    
+    # 无星级时使用SnowNLP进行情感分析
     try:
         score = SnowNLP(text).sentiments
     except Exception:
         return "中性"
+    
     if score > SENTIMENT_THRESHOLD_POS:
         return "正面"
     if score < SENTIMENT_THRESHOLD_NEG:

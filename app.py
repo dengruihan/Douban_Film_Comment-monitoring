@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import os
 import sys
+import platform
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database.db_manager import get_db
-from crawler.douban_spider import fetch_comments
+from crawler.douban_spider import fetch_comments, search_movie
 from analysis.data_cleaner import clean_dataframe
 from analysis.nlp_processor import (
     analyze_sentiment_distribution,
@@ -15,6 +16,53 @@ from analysis.nlp_processor import (
     get_daily_comment_count
 )
 from config.settings import FONT_PATH
+
+
+def get_chinese_font_path():
+    """
+    获取中文字体路径
+    
+    优先级：
+    1. 项目字体文件
+    2. 系统字体
+    
+    Returns:
+        str or None: 字体路径，未找到返回None
+    """
+    # 优先使用项目字体
+    if os.path.exists(FONT_PATH):
+        return FONT_PATH
+    
+    # 使用系统字体
+    system = platform.system()
+    
+    if system == "Darwin":  # macOS
+        system_fonts = [
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc"
+        ]
+    elif system == "Windows":
+        system_fonts = [
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simsun.ttc"
+        ]
+    elif system == "Linux":
+        system_fonts = [
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+        ]
+    else:
+        return None
+    
+    # 查找第一个存在的系统字体
+    for font in system_fonts:
+        if os.path.exists(font):
+            return font
+    
+    return None
 
 from pyecharts.charts import Pie, Line
 from pyecharts import options as opts
@@ -28,7 +76,39 @@ st.title("豆瓣电影短评舆情分析平台")
 
 db = get_db()
 
-movie_id = st.text_input("请输入豆瓣电影 ID（如 35267232）", value="")
+# 搜索方式选择
+search_mode = st.radio("选择输入方式", ["电影名搜索", "直接输入电影ID"], horizontal=True)
+
+movie_id = None
+
+if search_mode == "电影名搜索":
+    movie_name = st.text_input("请输入电影名称（如：肖申克的救赎）", value="")
+
+    if movie_name:
+        with st.spinner("正在搜索电影..."):
+            search_results = search_movie(movie_name)
+
+        if search_results:
+            st.success(f"找到 {len(search_results)} 部相关电影")
+
+            # 构建选项列表
+            options = []
+            for item in search_results:
+                year_str = f"({item['year']})" if item['year'] else ""
+                rating_str = f"评分: {item['rating']}"
+                label = f"{item['title']} {year_str} - {rating_str}"
+                options.append(label)
+
+            selected = st.selectbox("请选择要分析的电影", options)
+            selected_index = options.index(selected)
+            movie_id = search_results[selected_index]['movie_id']
+
+            st.info(f"✅ 已选择：{search_results[selected_index]['title']} (ID: {movie_id})")
+        elif movie_name:
+            st.warning("未找到相关电影，请尝试其他关键词或使用电影ID直接输入")
+
+else:
+    movie_id = st.text_input("请输入豆瓣电影 ID（如 1292052）", value="")
 
 if st.button("开始分析"):
     if not movie_id:
@@ -42,11 +122,17 @@ if st.button("开始分析"):
                 try:
                     total = fetch_comments(movie_id)
                     if total == 0:
-                        st.error("采集失败，可能需要登录 Cookie 或网络受限")
+                        st.error("采集失败，未获取到评论数据")
+                        st.info("💡 可能原因：\n1. 电影ID不存在\n2. 该电影暂无评论\n3. 网络连接问题")
                         st.stop()
                     st.success(f"采集完成，共获取 {total} 条评论")
                 except Exception as e:
-                    st.error(f"采集异常: {e}")
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    st.error(f"采集异常: {str(e)}")
+                    with st.expander("查看详细错误信息"):
+                        st.code(error_detail)
+                    st.info("💡 如果问题持续，可以尝试：\n1. 检查网络连接\n2. 更换其他电影\n3. 稍后再试")
                     st.stop()
 
         comments = db.get_comments(movie_id)
@@ -107,19 +193,27 @@ if st.button("开始分析"):
             word_freq = get_word_frequency(df, top_n=100)
             if word_freq:
                 word_dict = {word: count for word, count in word_freq}
-                font_path = FONT_PATH if os.path.exists(FONT_PATH) else None
-                wc = WordCloud(
-                    font_path=font_path,
-                    width=800,
-                    height=400,
-                    background_color="white",
-                    max_words=100
-                )
-                wc.generate_from_frequencies(word_dict)
-                fig, ax = plt.subplots(figsize=(8, 4))
-                ax.imshow(wc, interpolation="bilinear")
-                ax.axis("off")
-                st.pyplot(fig)
+                font_path = get_chinese_font_path()
+                
+                if font_path is None:
+                    st.warning("未找到中文字体，词云可能显示为方块。请安装中文字体或添加字体文件到assets目录。")
+                
+                try:
+                    wc = WordCloud(
+                        font_path=font_path,
+                        width=800,
+                        height=400,
+                        background_color="white",
+                        max_words=100
+                    )
+                    wc.generate_from_frequencies(word_dict)
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    ax.imshow(wc, interpolation="bilinear")
+                    ax.axis("off")
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"词云生成失败: {e}")
+                    st.info("提示：可能缺少中文字体支持")
             else:
                 st.info("无足够词汇生成词云")
 

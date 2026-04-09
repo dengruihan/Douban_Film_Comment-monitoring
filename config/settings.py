@@ -1,4 +1,5 @@
-MAX_PAGES = 10
+MAX_PAGES = 10  # 每页20条评论，10页=200条（推荐值，避免被封禁）
+# 如需更多评论可调整为 20（400条）或 50（1000条），但爬取时间会更长
 REQUEST_DELAY_RANGE = (3, 6)
 MAX_RETRIES = 3
 DB_PATH = "database/sentiment.db"
