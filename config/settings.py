@@ -1,0 +1,13 @@
+MAX_PAGES = 10
+REQUEST_DELAY_RANGE = (3, 6)
+MAX_RETRIES = 3
+DB_PATH = "database/sentiment.db"
+SENTIMENT_THRESHOLD_POS = 0.6
+SENTIMENT_THRESHOLD_NEG = 0.4
+LOG_DIR = "logs"
+LOG_FILE = "logs/crawler.log"
+STOPWORDS_PATH = "assets/stopwords.txt"
+FONT_PATH = "assets/simhei.ttf"
+COMMENTS_PER_PAGE = 20
+BASE_URL = "https://movie.douban.com/subject/{movie_id}/comments"
+MOVIE_URL = "https://movie.douban.com/subject/{movie_id}"
