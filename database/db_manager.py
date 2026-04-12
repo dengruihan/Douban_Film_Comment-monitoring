@@ -19,9 +19,20 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS movie_info (
                     movie_id TEXT PRIMARY KEY,
                     movie_name TEXT,
-                    avg_rating REAL
+                    avg_rating REAL,
+                    genres TEXT,
+                    updated_at TEXT
                 )
             """)
+            # 兼容旧数据库：若缺少列则补加
+            try:
+                cursor.execute("ALTER TABLE movie_info ADD COLUMN genres TEXT")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE movie_info ADD COLUMN updated_at TEXT")
+            except Exception:
+                pass
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS movie_comments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +53,39 @@ class DatabaseManager:
     def get_connection(self):
         return sqlite3.connect(self.db_path)
 
-    def insert_movie_info(self, movie_id, movie_name, avg_rating):
+    def insert_movie_info(self, movie_id, movie_name, avg_rating, genres=None):
+        from datetime import datetime
+        genres_str = ",".join(genres) if genres else ""
+        updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO movie_info (movie_id, movie_name, avg_rating)
-                VALUES (?, ?, ?)
-            """, (movie_id, movie_name, avg_rating))
+                INSERT OR REPLACE INTO movie_info (movie_id, movie_name, avg_rating, genres, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (movie_id, movie_name, avg_rating, genres_str, updated_at))
             conn.commit()
+
+    def get_movies_by_genre(self, genre, exclude_movie_id=None):
+        """查询同类电影（数据库中已有的）"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT movie_id, movie_name, avg_rating, genres
+                FROM movie_info
+                WHERE genres LIKE ?
+            """, (f"%{genre}%",))
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                if exclude_movie_id and row[0] == exclude_movie_id:
+                    continue
+                results.append({
+                    "movie_id": row[0],
+                    "movie_name": row[1],
+                    "avg_rating": row[2],
+                    "genres": row[3].split(",") if row[3] else []
+                })
+            return results
 
     def insert_comments(self, comments):
         if not comments:
@@ -82,11 +118,17 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT movie_id, movie_name, avg_rating FROM movie_info WHERE movie_id = ?
+                SELECT movie_id, movie_name, avg_rating, genres, updated_at FROM movie_info WHERE movie_id = ?
             """, (movie_id,))
             row = cursor.fetchone()
             if row:
-                return {"movie_id": row[0], "movie_name": row[1], "avg_rating": row[2]}
+                return {
+                    "movie_id": row[0],
+                    "movie_name": row[1],
+                    "avg_rating": row[2],
+                    "genres": row[3] or "",
+                    "updated_at": row[4] or "未知"
+                }
             return None
 
     def get_comments(self, movie_id):
@@ -108,6 +150,15 @@ class DatabaseManager:
                 SELECT COUNT(*) FROM movie_comments WHERE movie_id = ?
             """, (movie_id,))
             return cursor.fetchone()[0]
+
+    def delete_movie_data(self, movie_id):
+        """删除指定电影的所有数据（用于刷新）"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM movie_comments WHERE movie_id = ?", (movie_id,))
+            cursor.execute("DELETE FROM movie_info WHERE movie_id = ?", (movie_id,))
+            conn.commit()
+            logger.info(f"已删除电影 {movie_id} 的所有数据")
 
     def close(self):
         pass

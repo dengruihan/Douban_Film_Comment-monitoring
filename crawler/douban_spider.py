@@ -75,9 +75,7 @@ def search_movie(movie_name):
 
 
 def fetch_movie_info(movie_id):
-    """
-    使用移动端API获取电影信息
-    """
+    """使用移动端API获取电影信息（含分类）"""
     url = f'https://m.douban.com/rexxar/api/v2/movie/{movie_id}'
     headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
@@ -90,7 +88,8 @@ def fetch_movie_info(movie_id):
             rating_info = data.get('rating', {})
             return {
                 "movie_name": data.get('title', '未知'),
-                "avg_rating": rating_info.get('value', 0.0)
+                "avg_rating": rating_info.get('value', 0.0) if rating_info else 0.0,
+                "genres": data.get('genres', [])
             }
         else:
             logger.warning(f"获取电影信息失败，状态码: {response.status_code}")
@@ -113,7 +112,12 @@ def fetch_comments(movie_id, max_pages=None):
     try:
         movie_info = fetch_movie_info(movie_id)
         if movie_info:
-            db.insert_movie_info(movie_id, movie_info["movie_name"], movie_info["avg_rating"])
+            db.insert_movie_info(
+                movie_id,
+                movie_info["movie_name"],
+                movie_info["avg_rating"],
+                movie_info.get("genres", [])
+            )
         else:
             logger.warning("电影信息获取失败，但继续采集评论")
     except Exception as e:
