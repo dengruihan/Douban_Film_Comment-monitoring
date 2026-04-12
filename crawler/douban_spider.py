@@ -99,9 +99,14 @@ def fetch_movie_info(movie_id):
         return None
 
 
-def fetch_comments(movie_id, max_pages=None):
+def fetch_comments(movie_id, max_pages=None, progress_callback=None):
     """
     使用移动端API获取评论（无需Cookie）
+
+    Args:
+        movie_id: 豆瓣电影ID
+        max_pages: 最大采集页数
+        progress_callback: 进度回调函数 callback(current_page, total_pages, page_count, total_count)
     """
     if max_pages is None:
         max_pages = MAX_PAGES
@@ -123,7 +128,12 @@ def fetch_comments(movie_id, max_pages=None):
     except Exception as e:
         logger.error(f"获取电影信息异常: {e}，但继续采集评论")
 
+    if progress_callback:
+        progress_callback(0, max_pages, 0, 0, 'fetching')
+
     for page in range(max_pages):
+        if progress_callback:
+            progress_callback(page, max_pages, 0, total_comments, 'fetching')
         start = page * COMMENTS_PER_PAGE
         url = f'https://m.douban.com/rexxar/api/v2/movie/{movie_id}/interests?count={COMMENTS_PER_PAGE}&order_by=hot&start={start}&for_mobile=1'
         result = _fetch_page_mobile(url, movie_id)
@@ -136,6 +146,8 @@ def fetch_comments(movie_id, max_pages=None):
         db.insert_comments(result)
         total_comments += len(result)
         logger.info(f"第 {page + 1}/{max_pages} 页采集完成，本页 {len(result)} 条评论，累计 {total_comments} 条")
+        if progress_callback:
+            progress_callback(page + 1, max_pages, len(result), total_comments, 'complete')
         time.sleep(random.uniform(*REQUEST_DELAY_RANGE))
 
     return total_comments

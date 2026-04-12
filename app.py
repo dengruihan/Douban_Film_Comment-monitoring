@@ -3,6 +3,8 @@ import pandas as pd
 import os
 import sys
 import platform
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -126,28 +128,107 @@ if st.session_state.analyzed_movie_id and st.session_state.analyzed_movie_id == 
             if st.button("🔄 刷新数据", help="删除旧数据并重新采集最新评论"):
                 with st.spinner("正在删除旧数据..."):
                     db.delete_movie_data(movie_id)
-                st.session_state.analyzed_movie_id = None
-                st.success("旧数据已删除，正在重新采集...")
+                st.session_state.analyzed_movie_id = movie_id
                 st.rerun()
     else:
-        with st.spinner("正在采集评论数据，请耐心等待..."):
+        progress_bar = st.progress(0, text="正在准备采集评论数据...")
+
+        class CrawlState:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.completed_pages = 0
+                self.total_pages = 0
+                self.total_count = 0
+                self.page_count = 0
+                self.fetching = False
+                self.done = False
+                self.error = None
+                self.result = None
+
+        crawl_state = CrawlState()
+
+        def on_progress(current_page, total_pages, page_count, total_count, phase='complete'):
+            with crawl_state.lock:
+                crawl_state.total_pages = total_pages
+                crawl_state.total_count = total_count
+                if phase == 'fetching':
+                    crawl_state.completed_pages = current_page
+                    crawl_state.fetching = True
+                elif phase == 'complete':
+                    crawl_state.completed_pages = current_page
+                    crawl_state.fetching = False
+                    crawl_state.page_count = page_count
+
+        def run_fetch():
             try:
-                total = fetch_comments(movie_id)
-                if total == 0:
-                    st.error("采集失败，未获取到评论数据")
-                    st.info("💡 可能原因：\n1. 电影ID不存在\n2. 该电影暂无评论\n3. 网络连接问题")
-                    st.session_state.analyzed_movie_id = None
-                    st.stop()
-                st.success(f"采集完成，共获取 {total} 条评论")
+                total = fetch_comments(movie_id, progress_callback=on_progress)
+                with crawl_state.lock:
+                    crawl_state.result = total
+                    crawl_state.done = True
             except Exception as e:
-                import traceback
-                error_detail = traceback.format_exc()
-                st.error(f"采集异常: {str(e)}")
-                with st.expander("查看详细错误信息"):
-                    st.code(error_detail)
-                st.info("💡 如果问题持续，可以尝试：\n1. 检查网络连接\n2. 更换其他电影\n3. 稍后再试")
-                st.session_state.analyzed_movie_id = None
-                st.stop()
+                with crawl_state.lock:
+                    crawl_state.error = e
+                    crawl_state.done = True
+
+        thread = threading.Thread(target=run_fetch, daemon=True)
+        thread.start()
+
+        displayed = 0.0
+        while True:
+            with crawl_state.lock:
+                completed = crawl_state.completed_pages
+                total_pages = crawl_state.total_pages
+                fetching = crawl_state.fetching
+                total_count = crawl_state.total_count
+                page_count = crawl_state.page_count
+                is_done = crawl_state.done
+                error = crawl_state.error
+
+            if is_done:
+                break
+
+            if total_pages > 0:
+                base = completed / total_pages
+                target = (completed + 1) / total_pages if fetching else base
+                if displayed < base:
+                    displayed = base
+                if displayed < target:
+                    displayed = min(displayed + (target - base) * 0.015 + 0.0003, target)
+
+                if completed == 0 and fetching:
+                    label = f"正在采集评论数据... 第 1/{total_pages} 页"
+                elif page_count > 0 and not fetching:
+                    label = f"正在采集评论数据... 第 {completed}/{total_pages} 页 | 本页 {page_count} 条 | 累计 {total_count} 条"
+                else:
+                    label = f"正在采集评论数据... 第 {completed + 1}/{total_pages} 页 | 累计 {total_count} 条"
+
+                progress_bar.progress(displayed, text=label)
+
+            time.sleep(0.05)
+
+        thread.join()
+
+        if error:
+            progress_bar.empty()
+            import traceback
+            error_detail = traceback.format_exc()
+            st.error(f"采集异常: {str(error)}")
+            with st.expander("查看详细错误信息"):
+                st.code(error_detail)
+            st.info("💡 如果问题持续，可以尝试：\n1. 检查网络连接\n2. 更换其他电影\n3. 稍后再试")
+            st.session_state.analyzed_movie_id = None
+            st.stop()
+
+        total = crawl_state.result
+        if total == 0:
+            progress_bar.empty()
+            st.error("采集失败，未获取到评论数据")
+            st.info("💡 可能原因：\n1. 电影ID不存在\n2. 该电影暂无评论\n3. 网络连接问题")
+            st.session_state.analyzed_movie_id = None
+            st.stop()
+
+        progress_bar.progress(1.0, text=f"采集完成！共获取 {total} 条评论")
+        st.success(f"采集完成，共获取 {total} 条评论")
 
     comments = db.get_comments(movie_id)
     if not comments:
