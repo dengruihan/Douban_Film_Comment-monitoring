@@ -1,30 +1,42 @@
 """
-智谱AI客户端封装
-用于调用GLM-4.7-flash模型进行关键词筛选
+DeepSeek AI客户端封装
+用于调用关键词筛选模型
 """
+
 import requests
 import logging
-import json
+import os
+import time
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # API配置
-API_KEY = "0f78e182d87b4873826b6193bc1bdf23.tNbBqoxMsMOq8ilC"
-API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-MODEL = "glm-4-flash"
+API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("ZHIPU_AI_API_KEY")
+API_URL = "https://api.deepseek.com/chat/completions"
+MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 
-class ZhipuAIClient:
-    """智谱AI客户端"""
+class DeepSeekAIClient:
+    """DeepSeek AI客户端"""
 
     def __init__(self, api_key=None):
         self.api_key = api_key or API_KEY
         self.api_url = API_URL
         self.model = MODEL
 
-    def chat(self, messages, max_tokens=1024, temperature=0.7):
+    def chat(
+        self, messages, max_tokens=1024, temperature=0.7, timeout=30, max_retries=2
+    ):
         """
-        调用智谱AI聊天接口
+        调用DeepSeek聊天接口
 
         Args:
             messages: 消息列表，格式 [{"role": "user", "content": "..."}]
@@ -36,36 +48,101 @@ class ZhipuAIClient:
         """
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
         }
 
         payload = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": temperature
+            "temperature": temperature,
         }
 
-        try:
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(
+                    self.api_url, headers=headers, json=payload, timeout=timeout
+                )
 
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                logger.info(f"智谱AI调用成功，返回内容长度: {len(content)}")
-                return content
-            else:
-                logger.error(f"智谱AI调用失败，状态码: {response.status_code}, 响应: {response.text}")
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                    except Exception as e:
+                        logger.error(
+                            f"DeepSeek响应JSON解析失败: {e}; 原始响应前500字符: {response.text[:500]}"
+                        )
+                        return None
+
+                    choices = (
+                        result.get("choices") if isinstance(result, dict) else None
+                    )
+                    if not choices:
+                        logger.error(
+                            f"DeepSeek响应缺少choices字段: {str(result)[:500]}"
+                        )
+                        return None
+
+                    first_choice = choices[0] if isinstance(choices[0], dict) else {}
+                    message = (
+                        first_choice.get("message", {})
+                        if isinstance(first_choice, dict)
+                        else {}
+                    )
+                    finish_reason = first_choice.get("finish_reason")
+                    request_id = None
+                    if isinstance(result, dict):
+                        request_id = result.get("id")
+
+                    content = (
+                        message.get("content") if isinstance(message, dict) else None
+                    )
+                    reasoning_content = (
+                        message.get("reasoning_content")
+                        if isinstance(message, dict)
+                        else None
+                    )
+
+                    if not content:
+                        logger.error(
+                            "DeepSeek响应content为空: "
+                            f"finish_reason={finish_reason}, request_id={request_id}, "
+                            f"reasoning_length={len(reasoning_content) if reasoning_content else 0}, "
+                            f"响应前500字符: {str(result)[:500]}"
+                        )
+
+                        if reasoning_content:
+                            logger.warning(
+                                "检测到reasoning_content非空，使用reasoning_content作为降级返回"
+                            )
+                            return reasoning_content
+
+                        return None
+
+                    logger.info(f"DeepSeek调用成功，返回内容长度: {len(content)}")
+                    logger.info(f"DeepSeek原始返回前300字符: {content[:300]}")
+                    return content
+
+                logger.error(
+                    "DeepSeek调用失败，"
+                    f"状态码: {response.status_code}, "
+                    f"响应头x-request-id: {response.headers.get('x-request-id')}, "
+                    f"响应: {response.text[:1000]}"
+                )
                 return None
 
-        except Exception as e:
-            logger.error(f"智谱AI调用异常: {e}")
-            return None
+            except requests.exceptions.Timeout as e:
+                if attempt < max_retries:
+                    wait_sec = attempt + 1
+                    logger.warning(
+                        f"DeepSeek调用超时(第 {attempt + 1}/{max_retries + 1} 次)，{wait_sec}s后重试: {e}"
+                    )
+                    time.sleep(wait_sec)
+                    continue
+                logger.error(f"DeepSeek调用异常: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"DeepSeek调用异常: {e}")
+                return None
 
     def filter_keywords(self, word_list, top_n=50):
         """
@@ -81,34 +158,46 @@ class ZhipuAIClient:
         # 构建词频字符串
         words_str = ", ".join([f"{word}({count})" for word, count in word_list[:100]])
 
-        prompt = f"""从以下高频词中筛选出能代表电影核心评价的关键词。
+        prompt = f"""任务：从高频词中筛选关键词。
 
-只保留以下两类词：
-1. 形容词：描述感受、评价、特质，如感动、震撼、精彩、失望、无聊、经典、荒诞、压抑、细腻、浪漫
-2. 特定名词：与该电影直接相关的人名、地名、专有名词、核心概念，如角色名、导演名、关键意象
+保留：
+1) 形容词（表达评价、感受）
+2) 与电影强相关的专有名词（人名、角色名、地名、意象）
 
-严格删除以下类型（即使它们看似有用也必须删除）：
-- 副词/虚词：终于、完全、其实、确实、好像、似乎、已经、依然、始终、根本、完全、实在、几乎
-- 代词/量词：一种、这个、那种、一些、每个、所有、任何、自己、他人
-- 通用动词：看、说、做、觉得、感觉、作为、成为、开始、希望、知道、认为、理解
-- 通用名词：角色、电影、故事、人物、剧情、画面、内容、情节、场面、部分、方面、观众
-- 连词/介词/语气词：因为、所以、虽然、但是、如果、还是、不过、然而、而且、那么
+删除：副词、代词、连词、语气词、通用动词、通用名词。
 
-高频词列表（词(频次)）：
-{words_str}
+输入词表：{words_str}
 
-只返回筛选后的关键词，用逗号分隔，不要解释、序号、引号。返回{top_n}个最重要的词。
-示例：感动,震撼,经典,压抑,救赎,安迪,监狱"""
+输出要求：
+- 仅输出关键词
+- 用英文逗号分隔
+- 不要解释、不要序号、不要换行
+- 最多{top_n}个"""
 
         messages = [{"role": "user", "content": prompt}]
 
-        result = self.chat(messages, max_tokens=512, temperature=0.3)
+        result = self.chat(messages, max_tokens=1200, temperature=0.2)
 
         if result:
             # 解析返回的关键词
-            keywords = [w.strip() for w in result.replace('，', ',').split(',')]
+            normalized = (
+                result.replace("```", "")
+                .replace("关键词", "")
+                .replace("：", ":")
+                .replace("\n", ",")
+                .replace("，", ",")
+            )
+            keywords = [w.strip() for w in normalized.split(",")]
             # 过滤空字符串和多余字符
-            keywords = [k for k in keywords if k and len(k) > 0]
+            keywords = [
+                k.strip("- *1234567890. ") for k in keywords if k and len(k) > 0
+            ]
+            keywords = [k for k in keywords if k]
+
+            if not keywords:
+                logger.warning(f"AI筛选解析后为空。原始返回前500字符: {result[:500]}")
+                return []
+
             logger.info(f"AI筛选完成，返回 {len(keywords)} 个关键词")
             return keywords[:top_n]
         else:
@@ -117,7 +206,7 @@ class ZhipuAIClient:
 
 
 # 创建全局客户端实例
-ai_client = ZhipuAIClient()
+ai_client = DeepSeekAIClient()
 
 
 def ai_filter_keywords(word_list, top_n=50):

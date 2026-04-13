@@ -8,3 +8,4 @@ pyecharts
 wordcloud
 streamlit
 streamlit-echarts
+python-dotenv
