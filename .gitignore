@@ -20,6 +20,7 @@ ENV/
 Thumbs.db
 
 # 项目特定
+docs/
 database/*.db
 logs/*.log
 *.sqlite
