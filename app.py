@@ -200,12 +200,9 @@ if (
             if total_pages > 0:
                 base = completed / total_pages
                 target = (completed + 1) / total_pages if fetching else base
-                if displayed < base:
-                    displayed = base
                 if displayed < target:
-                    displayed = min(
-                        displayed + (target - base) * 0.015 + 0.0003, target
-                    )
+                    step = (target - displayed) * 0.015 + 0.0001
+                    displayed = min(displayed + step, target)
 
                 if completed == 0 and fetching:
                     label = f"正在采集评论数据... 第 1/{total_pages} 页"
